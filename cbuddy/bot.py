@@ -30,13 +30,29 @@ async def api_post(path: str, json_body: Optional[dict] = None):
         return r.json()
 
 
+async def ensure_internal_user(update: Update) -> int:
+    tg_id = str(update.effective_user.id)
+    rec = USERS.setdefault(update.effective_user.id, {})
+    if rec.get("user_id"):
+        return rec["user_id"]
+    display = (update.effective_user.full_name or update.effective_user.username or f"tg_{tg_id}")
+    res = await api_post("/users/ensure_external", json_body={
+        "provider": "telegram",
+        "external_user_id": tg_id,
+        "external_username": update.effective_user.username,
+        "display_name": display,
+    })
+    rec["user_id"] = res["user_id"]
+    return rec["user_id"]
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    USERS.setdefault(update.effective_user.id, {})
+    await ensure_internal_user(update)
     await update.message.reply_text(
         "Привет! Я ChessBuddy. Команды:\n"
-        "/import_chesscom <username> — импортировать партии с chess.com (последние N месяцев)\n"
+        "/import_chesscom <username> [months] — импортировать партии с chess.com\n"
         "/status — статус индексации\n"
-        "/task [category] [username] — получить задачку; по умолчанию blunder\n"
+        "/task [category] [username] — задачка; по умолчанию blunder\n"
         "Ответ на задачу отправляй реплаем в формате UCI (e2e4)."
     )
 
@@ -47,13 +63,14 @@ async def import_chesscom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     username = context.args[0]
     months = int(context.args[1]) if len(context.args) > 1 and context.args[1].isdigit() else 3
-    USERS.setdefault(update.effective_user.id, {})["username"] = username
+    internal_user_id = await ensure_internal_user(update)
+    USERS[update.effective_user.id]["username"] = username
     await update.message.reply_text(f"Запускаю импорт {months} мес. для {username}…")
     try:
         res = await api_post("/import/chesscom/job", json_body={
             "username": username,
             "months": months,
-            "initiated_by_user_id": update.effective_user.id,
+            "initiated_by_user_id": internal_user_id,
         })
         await update.message.reply_text(f"Импорт запущен: job_id={res.get('job_id')}, imported={res.get('imported')}, skipped={res.get('skipped')}")
     except Exception as e:  # noqa
@@ -61,10 +78,10 @@ async def import_chesscom(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = USERS.get(update.effective_user.id) or {}
-    username = user.get("username")
+    internal_user_id = await ensure_internal_user(update)
+    username = USERS.get(update.effective_user.id, {}).get("username")
     try:
-        res = await api_get("/status", username=username, user_id=update.effective_user.id)
+        res = await api_get("/status", username=username, user_id=internal_user_id)
         job = res.get("last_import_job")
         job_line = ""
         if job:
@@ -82,16 +99,16 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = USERS.get(update.effective_user.id) or {}
-    username = user.get("username")
+    internal_user_id = await ensure_internal_user(update)
+    username = USERS.get(update.effective_user.id, {}).get("username")
     category = context.args[0] if context.args else "blunder"
     try:
-        body = {"user_id": update.effective_user.id, "category": category}
+        body = {"user_id": internal_user_id, "category": category}
         if username:
             body["username"] = username
         res = await api_post("/tasks/random", json_body=body)
         task_id = res["task_id"]
-        tasks = await api_get("/tasks", user_id=update.effective_user.id, limit=1)
+        tasks = await api_get("/tasks", user_id=internal_user_id, limit=1)
         fen = None
         for t in tasks.get("items", []):
             if t["id"] == task_id:
@@ -119,9 +136,10 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Формат хода должен быть UCI, например e2e4")
         return
     try:
+        internal_user_id = await ensure_internal_user(update)
         res = await api_post(f"/tasks/{rec['task_id']}/verify", json_body={
             "move_uci": move,
-            "user_id": update.effective_user.id,
+            "user_id": internal_user_id,
             "response_ms": 0,
         })
         ok = res.get("is_correct")

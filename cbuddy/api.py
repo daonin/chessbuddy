@@ -71,6 +71,25 @@ async def root():
     return {"status": "ok"}
 
 
+@app.get("/users/by_external")
+def user_by_external(provider: str, external_user_id: Optional[str] = None, external_username: Optional[str] = None):
+    if not external_user_id and not external_username:
+        raise HTTPException(400, "external_user_id or external_username required")
+    with get_connection() as conn:
+        where = ["provider=:prov"]
+        params = {"prov": provider}
+        if external_user_id:
+            where.append("external_user_id = :eid")
+            params["eid"] = external_user_id
+        if external_username:
+            where.append("external_username = :euname")
+            params["euname"] = external_username
+        row = fetch_one(conn, f"select user_id from chessbuddy.external_accounts where {' and '.join(where)}", **params)
+        if not row:
+            raise HTTPException(404, "not found")
+        return {"user_id": row["user_id"]}
+
+
 @app.get("/status")
 def status(username: Optional[str] = Query(None), user_id: Optional[int] = Query(None)):
     with get_connection() as conn:
@@ -109,7 +128,6 @@ def status(username: Optional[str] = Query(None), user_id: Optional[int] = Query
                 """,
                 uid=user_id,
             )
-        # last import job
         job = None
         if username:
             job = fetch_one(conn, """
@@ -162,7 +180,7 @@ def import_pgn_endpoint(body: ImportPGNRequest):
 
 
 class EnsureExternalUserRequest(BaseModel):
-    provider: str  # 'telegram' | 'chess.com' | 'lichess'
+    provider: str
     external_user_id: Optional[str] = None
     external_username: Optional[str] = None
     display_name: Optional[str] = None
@@ -173,8 +191,7 @@ def ensure_external_user(req: EnsureExternalUserRequest):
     if not req.external_user_id and not req.external_username:
         raise HTTPException(400, "external_user_id or external_username required")
     with get_connection() as conn:
-        # Try to find existing mapping
-        where = []
+        where = ["provider=:prov"]
         params = {"prov": req.provider}
         if req.external_user_id:
             where.append("external_user_id = :eid")
@@ -182,27 +199,27 @@ def ensure_external_user(req: EnsureExternalUserRequest):
         if req.external_username:
             where.append("external_username = :euname")
             params["euname"] = req.external_username
-        row = fetch_one(conn, f"select user_id from chessbuddy.external_accounts where provider=:prov and {' and '.join(where)}", **params)
+        row = fetch_one(conn, f"select user_id from chessbuddy.external_accounts where {' and '.join(where)}", **params)
         if row:
             return {"user_id": row["user_id"]}
-        # Create user and mapping
         uname = req.external_username or f"{req.provider}:{req.external_user_id}"
         user = fetch_one(conn, """
             insert into chessbuddy.users (username, display_name)
             values (:uname, :dname)
             returning id
         """, uname=uname, dname=req.display_name or uname)
+        ext_username = req.external_username or uname
         execute(conn, """
             insert into chessbuddy.external_accounts (user_id, provider, external_username, external_user_id)
             values (:uid, :prov, :euname, :eid)
-        """, uid=user["id"], prov=req.provider, euname=req.external_username, eid=req.external_user_id)
+        """, uid=user["id"], prov=req.provider, euname=ext_username, eid=req.external_user_id)
         return {"user_id": user["id"]}
 
 
 class ImportChesscomJobRequest(BaseModel):
     username: str
     months: int = 3
-    initiated_by_user_id: Optional[int] = None
+    initiated_by_user_id: int
 
 
 @app.post("/import/chesscom/job")
@@ -219,6 +236,9 @@ def import_chesscom_job(req: ImportChesscomJobRequest):
             m = 12
     stats = {"imported": 0, "skipped": 0}
     with get_connection() as conn:
+        u = fetch_one(conn, "select id from chessbuddy.users where id=:id", id=req.initiated_by_user_id)
+        if not u:
+            raise HTTPException(400, "initiated_by_user_id does not exist; resolve external -> internal first")
         job = fetch_one(conn, """
             insert into chessbuddy.import_jobs (provider, username, initiated_by_user_id, total_months, status)
             values ('chess.com', :uname, :uid, :tm, 'running')

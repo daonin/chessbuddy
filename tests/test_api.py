@@ -66,6 +66,26 @@ def test_import_pgn_and_list(client):
     assert isinstance(body["moves"], list)
 
 
+def test_import_job_requires_internal_user(client):
+    # First, ensure external mapping (telegram) to create an internal user
+    ext_id = "987654321"
+    r = client.post("/users/ensure_external", json={
+        "provider": "telegram",
+        "external_user_id": ext_id,
+        "display_name": "tg user"
+    })
+    assert r.status_code == 200
+    user_id = r.json()["user_id"]
+
+    # Start job with internal user id → 200
+    r = client.post("/import/chesscom/job", json={"username": "someone", "months": 1, "initiated_by_user_id": user_id})
+    assert r.status_code == 200
+
+    # Using a random non-existent id should 400
+    r = client.post("/import/chesscom/job", json={"username": "someone", "months": 1, "initiated_by_user_id": 999999111})
+    assert r.status_code == 400
+
+
 @pytest.mark.skipif(not os.getenv("ENGINE_PATH"), reason="Stockfish not configured")
 def test_analyse_and_highlights_flow(client):
     # Create small game
