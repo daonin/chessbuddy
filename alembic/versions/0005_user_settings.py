@@ -19,8 +19,8 @@ def upgrade() -> None:
         sa.Column('mistake_cp', sa.Integer(), nullable=True),
         sa.Column('blunder_cp', sa.Integer(), nullable=True),
         sa.Column('near_best_tolerance_cp', sa.Integer(), nullable=True),
-        sa.Column('created_at', sa.text("timestamptz not null default now()"), nullable=False),
-        sa.Column('updated_at', sa.text("timestamptz not null default now()"), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.PrimaryKeyConstraint('user_id'),
         schema='chessbuddy'
     )
