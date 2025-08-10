@@ -16,8 +16,6 @@ depends_on = None
 def upgrade() -> None:
     op.execute(
         r'''
-        create schema if not exists chessbuddy;
-
         -- Users
         create table if not exists chessbuddy.users (
           id                bigserial primary key,
