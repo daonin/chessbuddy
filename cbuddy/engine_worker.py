@@ -60,6 +60,8 @@ def _eval_fen(engine: chess.engine.SimpleEngine, fen: str, movetime_ms: int, mul
         pv = li.get("pv") or []
         best_uci = pv[0].uci() if pv else None
         results.append(EvalResult(cp=cp, best_uci=best_uci, depth=li.get("depth")))
+    # Ensure deterministic ordering: best (highest cp from side-to-move POV) first
+    results.sort(key=lambda r: (r.cp if r.cp is not None else -10_000), reverse=True)
     return results
 
 
@@ -204,7 +206,9 @@ def verify_task_answer(task_id: int, proposed_move_uci: str, *, user_id: int = 1
         board.push_uci(proposed_move_uci)
         after = _eval_fen(engine, board.fen(), cfg.engine.deep_movetime_ms, cfg.engine.deep_multipv)[0]
         delta = best.cp - after.cp
-        is_correct = (proposed_move_uci == best.best_uci) or (delta <= cfg.thresholds.near_best_tolerance_cp)
+        # Accept if the move matches any of top-K according to MultiPV tolerance
+        ok_by_multipv = any(r.best_uci == proposed_move_uci for r in res_list)
+        is_correct = ok_by_multipv or (delta <= cfg.thresholds.near_best_tolerance_cp)
         row = fetch_one(conn, """
             insert into chessbuddy.tactics_responses (
                 task_id, user_id, proposed_move_uci, proposed_move_san, response_ms,
