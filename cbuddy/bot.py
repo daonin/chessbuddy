@@ -3,6 +3,7 @@ import io
 import os
 import asyncio
 from typing import Optional
+import re
 
 import httpx
 from telegram import Update, InputFile
@@ -13,7 +14,7 @@ from .chess_images import fen_to_png_bytes
 API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 
 USERS: dict[int, dict] = {}
-LAST_TASK_MSG: dict[int, dict] = {}  # chat_id -> {task_id, message_id}
+LAST_TASK_MSG: dict[int, dict] = {}  # deprecated; no longer used for routing
 
 
 async def api_get(path: str, **params):
@@ -56,7 +57,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/analyse — проанализировать все ожидающие партии (только твои)\n"
         "/reanalyse <game_id>|last [--clear] — переанализ одной игры\n"
         "/reclassify <game_id>|last — переклассифицировать хайлайты без движка\n"
-        "Ответ на задачу отправляй реплаем в формате UCI (e2e4)."
+        "Ответ на задачу отправляй реплаем на картинку в формате UCI (e2e4) или командой /answer e2e4."
     )
 
 
@@ -109,13 +110,29 @@ async def task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         task_id = res["task_id"]
         task = await api_get(f"/tasks/{task_id}")
         fen = task.get("fen")
+        last_move_text = None
+        last_move_uci = None
+        try:
+            if task and task.get("game_id") and task.get("position_ply") is not None:
+                g = await api_get(f"/games/{task['game_id']}")
+                for mv in g.get("moves", []):
+                    if int(mv.get("ply", -1)) == int(task["position_ply"]):
+                        last_move_text = mv.get("san") or mv.get("uci")
+                        last_move_uci = mv.get("uci")
+                        break
+        except Exception:
+            last_move_text = None
+            last_move_uci = None
         if not fen:
             await update.message.reply_text("Не удалось получить задачу (нет позиции).")
             return
-        img = fen_to_png_bytes(fen)
-        caption = f"Задача #{task_id} ({category}). Ответь реплаем ходом в формате UCI (e2e4)."
-        msg = await update.message.reply_photo(InputFile(io.BytesIO(img), filename="task.png"), caption=caption)
-        LAST_TASK_MSG[update.effective_chat.id] = {"task_id": task_id, "message_id": msg.message_id}
+        img = fen_to_png_bytes(fen, last_move_uci=last_move_uci)
+        extra = f" Последний ход соперника: {last_move_text}." if last_move_text else ""
+        caption = (
+            f"Задача #{task_id} ({category}).{extra} "
+            f"Ответь реплаем ходом в формате UCI (e2e4) или /answer e2e4 в ответ на это сообщение."
+        )
+        await update.message.reply_photo(InputFile(io.BytesIO(img), filename="task.png"), caption=caption)
     except Exception as e:  # noqa
         await update.message.reply_text(f"Не удалось получить задачу: {e}")
 
@@ -190,18 +207,58 @@ async def reclassify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.reply_to_message:
+    if not update.message:
         return
-    rec = LAST_TASK_MSG.get(update.effective_chat.id)
-    if not rec or update.message.reply_to_message.message_id != rec.get("message_id"):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Ответь реплаем на сообщение с задачей, либо используй /answer <ход> в ответ на сообщение с задачей")
         return
+    # Extract task_id from replied-to message caption/text
+    replied = update.message.reply_to_message
+    source_text = (replied.caption or replied.text or "")
+    m = re.search(r"Задача\s*#(\d+)", source_text)
+    if not m:
+        await update.message.reply_text("Не удалось определить задачу. Ответь на сообщение с задачей.")
+        return
+    task_id = int(m.group(1))
     move = (update.message.text or "").strip()
     if len(move) < 4:
         await update.message.reply_text("Формат хода должен быть UCI, например e2e4")
         return
     try:
         internal_user_id = await ensure_internal_user(update)
-        res = await api_post(f"/tasks/{rec['task_id']}/verify", json_body={
+        res = await api_post(f"/tasks/{task_id}/verify", json_body={
+            "move_uci": move,
+            "user_id": internal_user_id,
+            "response_ms": 0,
+        })
+        ok = res.get("is_correct")
+        best = res.get("engine_best_move_uci")
+        await update.message.reply_text("Верно!" if ok else f"Неверно. Лучший ход: {best}")
+    except Exception as e:  # noqa
+        await update.message.reply_text(f"Ошибка проверки: {e}")
+
+
+async def answer_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Формат: /answer <ход в UCI> — используйте в ответ на сообщение с задачей")
+        return
+    if not update.message or not update.message.reply_to_message:
+        await update.message.reply_text("Используй /answer в ответ на сообщение с задачей")
+        return
+    replied = update.message.reply_to_message
+    source_text = (replied.caption or replied.text or "")
+    m = re.search(r"Задача\s*#(\d+)", source_text)
+    if not m:
+        await update.message.reply_text("Не удалось определить задачу. Ответь на сообщение с задачей.")
+        return
+    task_id = int(m.group(1))
+    move = (context.args[0] or "").strip()
+    if len(move) < 4:
+        await update.message.reply_text("Формат хода должен быть UCI, например e2e4")
+        return
+    try:
+        internal_user_id = await ensure_internal_user(update)
+        res = await api_post(f"/tasks/{task_id}/verify", json_body={
             "move_uci": move,
             "user_id": internal_user_id,
             "response_ms": 0,
@@ -223,6 +280,7 @@ def main() -> None:
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("task", task))
     app.add_handler(CommandHandler("analyse", analyse))
+    app.add_handler(CommandHandler("answer", answer_cmd))
     app.add_handler(CommandHandler("reanalyse", reanalyse_cmd))
     app.add_handler(CommandHandler("reclassify", reclassify_cmd))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), reply_handler))

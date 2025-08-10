@@ -598,9 +598,12 @@ class VerifyTaskRequest(BaseModel):
 
 @app.post("/tasks/{task_id}/verify")
 def verify_task(task_id: int, body: VerifyTaskRequest):
+    logger.info("verify_task start task_id=%s user_id=%s", task_id, body.user_id)
     with get_connection() as conn:
-        # The user_id is now resolved via /users/ensure_external
-        pass
+        row = fetch_one(conn, "select id from chessbuddy.tactics_tasks where id=:id", id=task_id)
+        if not row:
+            logger.info("verify_task task_id=%s not found", task_id)
+            raise HTTPException(404, "task not found")
     try:
         res = verify_task_answer(task_id, body.move_uci, user_id=body.user_id, response_ms=body.response_ms)
     except ValueError:
