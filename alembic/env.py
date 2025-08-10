@@ -50,10 +50,14 @@ def run_migrations_online() -> None:
         future=True,
     )
 
-    # Ensure schema exists BEFORE Alembic ensures version table
-    with connectable.connect() as pre_conn:
-        pre_conn.execute(text("create schema if not exists chessbuddy"))
-        pre_conn.commit()
+    # Try to ensure schema exists; ignore permission errors (Docker initdb should create it)
+    try:
+        with connectable.connect() as pre_conn:
+            pre_conn.execute(text("create schema if not exists chessbuddy"))
+            pre_conn.commit()
+    except Exception:
+        # likely insufficient privilege; continue assuming schema exists
+        pass
 
     with connectable.connect() as connection:
         context.configure(
