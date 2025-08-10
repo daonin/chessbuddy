@@ -127,26 +127,67 @@ def user_by_external(provider: str, external_user_id: Optional[str] = None, exte
 @app.get("/status")
 def status(username: Optional[str] = Query(None), user_id: Optional[int] = Query(None)):
     with get_connection() as conn:
-        params = {}
-        uname_clause = ""
-        if username:
-            uname_clause = " where white_username = :uname or black_username = :uname"
-            params["uname"] = username
-        total_games = fetch_one(conn, f"select count(*) as c from chessbuddy.v_game_meta{uname_clause}", **params)["c"]
-        analysed_games = fetch_one(
-            conn,
-            f"""
-            select count(distinct game_id) as c
-            from chessbuddy.v_move_highlights_feed
-            {('where category_key is not null and (white_username = :uname or black_username = :uname)') if username else ''}
-            """,
-            **({"uname": username} if username else {}),
-        )["c"]
-        total_highlights = fetch_one(
-            conn,
-            f"select count(*) as c from chessbuddy.v_move_highlights_feed{uname_clause}",
-            **params,
-        )["c"]
+        # total games for filter (username or user_id)
+        if user_id is not None:
+            total_games = fetch_one(conn, """
+                select count(*) as c
+                from chessbuddy.games g
+                join chessbuddy.players wp on wp.id = g.white_player_id
+                join chessbuddy.players bp on bp.id = g.black_player_id
+                where exists (
+                  select 1 from chessbuddy.external_accounts ea
+                  where ea.user_id = :uid
+                    and ((ea.provider = wp.provider and ea.external_username = wp.username)
+                      or (ea.provider = bp.provider and ea.external_username = bp.username))
+                )
+            """, uid=user_id)["c"]
+            analysed_games = fetch_one(conn, """
+                select count(distinct h.game_id) as c
+                from chessbuddy.move_highlights h
+                join chessbuddy.games g on g.id = h.game_id
+                join chessbuddy.players wp on wp.id = g.white_player_id
+                join chessbuddy.players bp on bp.id = g.black_player_id
+                where exists (
+                  select 1 from chessbuddy.external_accounts ea
+                  where ea.user_id = :uid
+                    and ((ea.provider = wp.provider and ea.external_username = wp.username)
+                      or (ea.provider = bp.provider and ea.external_username = bp.username))
+                )
+            """, uid=user_id)["c"]
+            total_highlights = fetch_one(conn, """
+                select count(*) as c
+                from chessbuddy.move_highlights h
+                join chessbuddy.games g on g.id = h.game_id
+                join chessbuddy.players wp on wp.id = g.white_player_id
+                join chessbuddy.players bp on bp.id = g.black_player_id
+                where exists (
+                  select 1 from chessbuddy.external_accounts ea
+                  where ea.user_id = :uid
+                    and ((ea.provider = wp.provider and ea.external_username = wp.username)
+                      or (ea.provider = bp.provider and ea.external_username = bp.username))
+                )
+            """, uid=user_id)["c"]
+        else:
+            params = {}
+            uname_clause = ""
+            if username:
+                uname_clause = " where white_username = :uname or black_username = :uname"
+                params["uname"] = username
+            total_games = fetch_one(conn, f"select count(*) as c from chessbuddy.v_game_meta{uname_clause}", **params)["c"]
+            analysed_games = fetch_one(
+                conn,
+                f"""
+                select count(distinct game_id) as c
+                from chessbuddy.v_move_highlights_feed
+                {('where category_key is not null and (white_username = :uname or black_username = :uname)') if username else ''}
+                """,
+                **({"uname": username} if username else {}),
+            )["c"]
+            total_highlights = fetch_one(
+                conn,
+                f"select count(*) as c from chessbuddy.v_move_highlights_feed{uname_clause}",
+                **params,
+            )["c"]
         tasks_stats = {}
         if user_id is not None:
             tasks_stats = fetch_one(
@@ -162,8 +203,9 @@ def status(username: Optional[str] = Query(None), user_id: Optional[int] = Query
                 """,
                 uid=user_id,
             )
+        # last import job (prefer username context)
         job = None
-        if username:
+        if username is not None:
             job = fetch_one(conn, """
                 select * from chessbuddy.import_jobs
                 where username=:uname
@@ -270,9 +312,16 @@ def import_chesscom_job(req: ImportChesscomJobRequest):
             m = 12
     stats = {"imported": 0, "skipped": 0}
     with get_connection() as conn:
+        # ensure internal user exists
         u = fetch_one(conn, "select id from chessbuddy.users where id=:id", id=req.initiated_by_user_id)
         if not u:
             raise HTTPException(400, "initiated_by_user_id does not exist; resolve external -> internal first")
+        # auto-link chess.com account to user for downstream filters (no-op if exists)
+        execute(conn, """
+            insert into chessbuddy.external_accounts (user_id, provider, external_username)
+            values (:uid, 'chess.com', :uname)
+            on conflict (provider, external_username) do nothing
+        """, uid=req.initiated_by_user_id, uname=req.username)
         job = fetch_one(conn, """
             insert into chessbuddy.import_jobs (provider, username, initiated_by_user_id, total_months, status)
             values ('chess.com', :uname, :uid, :tm, 'running')
