@@ -6,7 +6,13 @@ import chess.svg
 import cairosvg
 
 
-def fen_to_png_bytes(fen: str, *, last_move_uci: Optional[str] = None, check: bool = False, size: int = 512) -> bytes:
+def fen_to_png_bytes(
+    fen: str,
+    *,
+    last_move_uci: Optional[str] = None,
+    show_check: bool = False,
+    size: int = 512,
+) -> bytes:
     board = chess.Board(fen)
     # Orient the board so the side to move is at the bottom
     orientation = board.turn  # chess.WHITE or chess.BLACK
@@ -25,14 +31,17 @@ def fen_to_png_bytes(fen: str, *, last_move_uci: Optional[str] = None, check: bo
     else:
         lastmove = None
     # Disable default coordinate/marker overlays to avoid red dot on a1
+    # When show_check is True and the side to move is in check, highlight the king's square.
+    check_square = board.king(board.turn) if (show_check and board.is_check()) else None
+
     svg = chess.svg.board(
         board=board,
         size=size,
-        check=check,
+        check=check_square,
         arrows=arrows,
         coordinates=True,
         lastmove=lastmove,
-        squares=[],
+        squares=None,  # None to avoid forcing overlays that may create stray markers
         orientation=orientation,
     )
     png = cairosvg.svg2png(bytestring=svg.encode("utf-8"))
