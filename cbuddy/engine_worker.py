@@ -46,9 +46,8 @@ def _open_engine(cfg: AppConfig) -> chess.engine.SimpleEngine:
 
 
 def _eval_fen(engine: chess.engine.SimpleEngine, fen: str, movetime_ms: int, multipv: int = 1) -> list[EvalResult]:
-    engine.configure({"MultiPV": multipv})
     board = chess.Board(fen)
-    info = engine.analyse(board, chess.engine.Limit(time=movetime_ms / 1000))
+    info = engine.analyse(board, chess.engine.Limit(time=movetime_ms / 1000), multipv=multipv)
     infos = info if isinstance(info, list) else [info]
     results: list[EvalResult] = []
     for li in infos:
