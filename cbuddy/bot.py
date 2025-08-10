@@ -105,31 +105,27 @@ async def task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     internal_user_id = await ensure_internal_user(update)
     category = context.args[0] if context.args else "blunder"
     try:
-        body = {"user_id": internal_user_id, "category": category}
+        body = {"user_id": internal_user_id, "category": category, "own_side_only": True}
         res = await api_post("/tasks/random", json_body=body)
         task_id = res["task_id"]
         task = await api_get(f"/tasks/{task_id}")
         fen = task.get("fen")
-        last_move_text = None
         last_move_uci = None
         try:
             if task and task.get("game_id") and task.get("position_ply") is not None:
                 g = await api_get(f"/games/{task['game_id']}")
                 for mv in g.get("moves", []):
                     if int(mv.get("ply", -1)) == int(task["position_ply"]):
-                        last_move_text = mv.get("san") or mv.get("uci")
                         last_move_uci = mv.get("uci")
                         break
         except Exception:
-            last_move_text = None
             last_move_uci = None
         if not fen:
             await update.message.reply_text("Не удалось получить задачу (нет позиции).")
             return
         img = fen_to_png_bytes(fen, last_move_uci=last_move_uci)
-        extra = f" Последний ход соперника: {last_move_text}." if last_move_text else ""
         caption = (
-            f"Задача #{task_id} ({category}).{extra} "
+            f"Задача #{task_id} ({category}). "
             f"Ответь реплаем ходом в формате UCI (e2e4) или /answer e2e4 в ответ на это сообщение."
         )
         await update.message.reply_photo(InputFile(io.BytesIO(img), filename="task.png"), caption=caption)

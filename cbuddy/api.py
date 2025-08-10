@@ -424,7 +424,9 @@ def list_games(
         clauses.append("(white_username = :uname or black_username = :uname)")
         params["uname"] = username
     if user_id is not None:
-        clauses.append("exists (select 1 from chessbuddy.external_accounts ea where ea.user_id=:uid and (white_username = ea.external_username or black_username = ea.external_username))")
+        clauses.append(
+            "exists (select 1 from chessbuddy.games g2 join chessbuddy.players wp on wp.id=g2.white_player_id join chessbuddy.players bp on bp.id=g2.black_player_id where g2.id=id and (wp.user_id=:uid or bp.user_id=:uid))"
+        )
         params["uid"] = user_id
     if last_id is not None:
         clauses.append("id < :lid")
@@ -649,6 +651,7 @@ class RandomTaskRequest(BaseModel):
     username: Optional[str] = None
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
+    own_side_only: bool = True
 
 
 @app.post("/tasks/random")
@@ -663,7 +666,15 @@ def random_task(body: RandomTaskRequest):
         clauses.append("(white_username = :uname or black_username = :uname)")
         params["uname"] = body.username
     if body.user_id is not None:
-        clauses.append("exists (select 1 from chessbuddy.external_accounts ea where ea.user_id=:uid and (white_username = ea.external_username or black_username = ea.external_username))")
+        if body.own_side_only:
+            # Only highlights where the ply belongs to the user's side: white moves are odd ply, black moves are even ply
+            clauses.append(
+                "exists (select 1 from chessbuddy.games g2 join chessbuddy.players wp on wp.id=g2.white_player_id join chessbuddy.players bp on bp.id=g2.black_player_id where g2.id=game_id and ((wp.user_id=:uid and (ply % 2)=1) or (bp.user_id=:uid and (ply % 2)=0)))"
+            )
+        else:
+            clauses.append(
+                "exists (select 1 from chessbuddy.games g2 join chessbuddy.players wp on wp.id=g2.white_player_id join chessbuddy.players bp on bp.id=g2.black_player_id where g2.id=game_id and (wp.user_id=:uid or bp.user_id=:uid))"
+            )
         params["uid"] = body.user_id
     if body.start_time is not None:
         clauses.append("played_at >= :st")

@@ -95,6 +95,14 @@ def import_pgn(
             returning id
         """, prov=prov_players, uname=black_name, dname=black_name)
 
+        # Link players to internal users if known via external_accounts
+        execute(conn, """
+            update chessbuddy.players p
+            set user_id = ea.user_id
+            from chessbuddy.external_accounts ea
+            where ea.provider = p.provider and ea.external_username = p.username and p.id in (:wid, :bid) and p.user_id is distinct from ea.user_id
+        """, wid=w["id"], bid=b["id"])
+
         # Game insert/dedupe
         existing = None
         if external_game_id:
