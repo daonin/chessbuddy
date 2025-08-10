@@ -2,6 +2,11 @@
 
 A service to store and analyze chess games, extract notable moves (blunders, mistakes, brilliants, etc.), and generate tactics tasks.
 
+## Changes (DB user)
+- Compose spins up Postgres and creates a dedicated app user `chessbuddy_app` via `docker/initdb/01_app_user.sql`.
+- API connects as `chessbuddy_app` (no superuser), schema `chessbuddy` owned by this user.
+- DB port 5432 is not exposed by default (uncomment in compose for local DB access).
+
 ## Features
 - Import games (PGN or chess.com monthly archives)
 - Store games, moves, engine evaluations, and highlights
@@ -9,7 +14,7 @@ A service to store and analyze chess games, extract notable moves (blunders, mis
 - Generate tactics tasks from blunders and verify user answers
 - FastAPI HTTP API with Swagger docs
 - Alembic migrations for PostgreSQL
-- Dockerized deployment (API + Postgres); Stockfish installed in API image
+- Dockerized deployment (API + Postgres + Bot)
 
 ## Tech
 - Python 3.11, FastAPI, SQLAlchemy Core
@@ -17,32 +22,30 @@ A service to store and analyze chess games, extract notable moves (blunders, mis
 - python-chess (UCI engine integration)
 - Stockfish (UCI engine)
 
-## Quickstart (local)
-1) Prereqs: Postgres running locally, and optionally Stockfish
-- macOS Postgres: `brew install postgresql@16 && brew services start postgresql@16`
-- Stockfish: `brew install stockfish` (optional for analysis)
+## Quickstart (Docker)
+```bash
+docker compose up --build
+# API: http://localhost:8000 ; Swagger: /docs
+```
+- For local DB access, uncomment the `ports: 5432:5432` lines under `db`.
+- API connects with: `postgresql+psycopg://chessbuddy_app:chessbuddy_password@db:5432/chessbuddy`.
 
-2) Create venv and install dependencies
+## Quickstart (local)
+1) Prereqs: Postgres, Stockfish (optional)
+2) venv + deps
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
-
-3) Configure env
-- Copy `.env.example` to `.env` and adjust if needed. Defaults use peer auth and DB `chessbuddy`.
-- Set `ENGINE_PATH=$(which stockfish)` if installed.
-
-4) Create DB and migrate
+3) Env & migrate
 ```bash
 createdb chessbuddy || true
 alembic upgrade head
 ```
-
-5) Run API
+4) Run API
 ```bash
 uvicorn cbuddy.api:app --reload
-# http://127.0.0.1:8000/docs
 ```
 
 ## Docker

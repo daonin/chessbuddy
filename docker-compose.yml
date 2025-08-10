@@ -6,10 +6,12 @@ services:
       POSTGRES_DB: chessbuddy
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
+    # Do not expose DB to host in prod; comment next line for dev-only exposure
+    # ports:
+    #   - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -19,7 +21,7 @@ services:
   api:
     build: .
     environment:
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/chessbuddy
+      DATABASE_URL: postgresql+psycopg://chessbuddy_app:chessbuddy_password@db:5432/chessbuddy?application_name=chessbuddy-api
       CORS_ALLOW_ORIGINS: "*"
       ENGINE_PATH: /usr/bin/stockfish
       UVICORN_WORKERS: 2
