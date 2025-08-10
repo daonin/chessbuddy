@@ -18,14 +18,14 @@ class EngineConfig:
 
 @dataclass
 class HighlightThresholds:
-    # Более строгие дефолты, чтобы уменьшить шум
+    # Радикально строгие дефолты, чтобы обрезать шум
     # delta_cp = after - before; отрицательные значения — ухудшения
-    brilliant_cp: int = int(os.getenv("THRESH_BRILLIANT_CP", "350"))
-    great_cp: int = int(os.getenv("THRESH_GREAT_CP", "200"))
-    inaccuracy_cp: int = int(os.getenv("THRESH_INACCURACY_CP", "-150"))
-    mistake_cp: int = int(os.getenv("THRESH_MISTAKE_CP", "-300"))
-    blunder_cp: int = int(os.getenv("THRESH_BLUNDER_CP", "-600"))
-    near_best_tolerance_cp: int = int(os.getenv("THRESH_NEAR_BEST_TOL_CP", "20"))
+    brilliant_cp: int = int(os.getenv("THRESH_BRILLIANT_CP", "900"))
+    great_cp: int = int(os.getenv("THRESH_GREAT_CP", "600"))
+    inaccuracy_cp: int = int(os.getenv("THRESH_INACCURACY_CP", "-400"))
+    mistake_cp: int = int(os.getenv("THRESH_MISTAKE_CP", "-800"))
+    blunder_cp: int = int(os.getenv("THRESH_BLUNDER_CP", "-1200"))
+    near_best_tolerance_cp: int = int(os.getenv("THRESH_NEAR_BEST_TOL_CP", "10"))
 
 
 @dataclass
