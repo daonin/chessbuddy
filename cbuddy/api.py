@@ -161,6 +161,54 @@ def import_pgn_endpoint(body: ImportPGNRequest):
     return {"game_id": res.game_id, "created": res.created}
 
 
+class ImportChesscomJobRequest(BaseModel):
+    username: str
+    months: int = 3
+    initiated_by_user_id: Optional[int] = None
+
+
+@app.post("/import/chesscom/job")
+def import_chesscom_job(req: ImportChesscomJobRequest):
+    from datetime import date
+    today = date.today()
+    ym = []
+    y, m = today.year, today.month
+    for _ in range(req.months):
+        ym.append((y, m))
+        m -= 1
+        if m == 0:
+            y -= 1
+            m = 12
+    stats = {"imported": 0, "skipped": 0}
+    with get_connection() as conn:
+        job = fetch_one(conn, """
+            insert into chessbuddy.import_jobs (provider, username, initiated_by_user_id, total_months, status)
+            values ('chess.com', :uname, :uid, :tm, 'running')
+            returning id
+        """, uname=req.username, uid=req.initiated_by_user_id, tm=len(ym))
+        job_id = job["id"]
+    try:
+        for y, m in ym:
+            res = import_chesscom_month(req.username, y, m)
+            stats["imported"] += res.get("imported", 0)
+            stats["skipped"] += res.get("skipped", 0)
+            with get_connection() as conn:
+                execute(conn, """
+                    update chessbuddy.import_jobs
+                    set processed_months = processed_months + 1,
+                        imported_games = imported_games + :imp,
+                        skipped_games = skipped_games + :sk
+                    where id=:jid
+                """, jid=job_id, imp=res.get("imported", 0), sk=res.get("skipped", 0))
+        with get_connection() as conn:
+            execute(conn, "update chessbuddy.import_jobs set status='done', finished_at=now() where id=:jid", jid=job_id)
+    except Exception as e:  # noqa
+        with get_connection() as conn:
+            execute(conn, "update chessbuddy.import_jobs set status='failed', error=:err, finished_at=now() where id=:jid", jid=job_id, err=str(e))
+        raise
+    return {"job_id": job_id, **stats}
+
+
 @app.post("/import/chesscom/{username}/{year}/{month}")
 def import_chesscom_month_endpoint(username: str, year: int, month: int):
     return import_chesscom_month(username, year, month)
