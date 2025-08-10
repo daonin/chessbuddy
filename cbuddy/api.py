@@ -71,6 +71,67 @@ async def root():
     return {"status": "ok"}
 
 
+@app.get("/status")
+def status(username: Optional[str] = Query(None), user_id: Optional[int] = Query(None)):
+    with get_connection() as conn:
+        params = {}
+        uname_clause = ""
+        if username:
+            uname_clause = " where white_username = :uname or black_username = :uname"
+            params["uname"] = username
+        total_games = fetch_one(conn, f"select count(*) as c from chessbuddy.v_game_meta{uname_clause}", **params)["c"]
+        analysed_games = fetch_one(
+            conn,
+            f"""
+            select count(distinct game_id) as c
+            from chessbuddy.v_move_highlights_feed
+            {('where category_key is not null and (white_username = :uname or black_username = :uname)') if username else ''}
+            """,
+            **({"uname": username} if username else {}),
+        )["c"]
+        total_highlights = fetch_one(
+            conn,
+            f"select count(*) as c from chessbuddy.v_move_highlights_feed{uname_clause}",
+            **params,
+        )["c"]
+        tasks_stats = {}
+        if user_id is not None:
+            tasks_stats = fetch_one(
+                conn,
+                """
+                with t as (
+                  select status, count(*) as c from chessbuddy.tactics_tasks where user_id=:uid group by status
+                )
+                select
+                  coalesce((select c from t where status='new'),0) as new,
+                  coalesce((select c from t where status='answered'),0) as answered,
+                  coalesce((select count(*) from chessbuddy.tactics_tasks where user_id=:uid),0) as total
+                """,
+                uid=user_id,
+            )
+        # last import job
+        job = None
+        if username:
+            job = fetch_one(conn, """
+                select * from chessbuddy.import_jobs
+                where username=:uname
+                order by started_at desc, id desc
+                limit 1
+            """, uname=username)
+    progress = None
+    if total_games:
+        progress = round((analysed_games / total_games) * 100)
+    return {
+        "username": username,
+        "total_games": total_games,
+        "analysed_games": analysed_games,
+        "total_highlights": total_highlights,
+        "progress_percent": progress,
+        "tasks": tasks_stats,
+        "last_import_job": job,
+    }
+
+
 class ImportPGNRequest(BaseModel):
     model_config = ConfigDict(json_schema_extra={
         "example": {

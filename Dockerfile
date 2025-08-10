@@ -9,12 +9,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
     PORT=8000
 
-# Install system deps and stockfish engine
+# Install system deps, stockfish engine, and Cairo runtime for image rendering
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     ca-certificates \
     stockfish \
+    libcairo2 \
+    libpango-1.0-0 \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

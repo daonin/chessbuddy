@@ -30,5 +30,15 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
+  bot:
+    build: .
+    command: python -m cbuddy.bot
+    environment:
+      API_BASE: http://api:8000
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+    depends_on:
+      - api
+    restart: unless-stopped
+
 volumes:
   pgdata:
