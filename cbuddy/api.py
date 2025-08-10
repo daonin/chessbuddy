@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 from .db import get_connection, fetch_all, fetch_one, execute
 from .importer import import_pgn, import_chesscom_month
 from .engine_worker import analyse_game_pipeline, verify_task_answer
+from .config import AppConfig
 
 
 class _LoggingMiddleware(BaseHTTPMiddleware):
@@ -71,9 +72,24 @@ async def root():
     return {"status": "ok"}
 
 
+@app.get("/engine/health")
+def engine_health():
+    import chess
+    import chess.engine
+    cfg = AppConfig()
+    path = cfg.engine.engine_path
+    try:
+        eng = chess.engine.SimpleEngine.popen_uci(path)
+        board = chess.Board()
+        eng.analyse(board, chess.engine.Limit(time=0.05))
+        eng.quit()
+        return {"ok": True, "engine_path": path}
+    except Exception as e:  # noqa
+        return {"ok": False, "engine_path": path, "error": str(e)}
+
+
 @app.post("/analyse/pending")
 def analyse_pending(user_id: Optional[int] = Query(None), limit: int = Query(5, ge=1, le=100)):
-    # Pick games without any engine evaluations yet (treat as not analysed)
     clauses = ["not exists (select 1 from chessbuddy.engine_evaluations e where e.game_id = g.id)"]
     params = {"lim": limit}
     if user_id is not None:
@@ -101,6 +117,7 @@ def analyse_pending(user_id: Optional[int] = Query(None), limit: int = Query(5, 
             analyse_game_pipeline(gid)
             processed += 1
         except Exception as e:  # noqa
+            print(f"analyse error game_id={gid}: {e}")
             errors.append({"game_id": gid, "error": str(e)})
     return {"selected": len(ids), "processed": processed, "errors": errors}
 
