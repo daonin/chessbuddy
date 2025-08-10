@@ -676,3 +676,22 @@ def random_task(body: RandomTaskRequest):
             """, uid=body.user_id, gid=hi["game_id"], plym1=int(hi["ply"]) - 1)
             return {"task_id": existing["id"], "created": False}
         return {"task_id": task["id"], "created": True, "highlight_id": hi["id"], "game_id": hi["game_id"], "ply": hi["ply"]}
+
+
+@app.get("/tasks")
+def list_tasks(user_id: Optional[int] = Query(None), status: Optional[str] = Query(None), last_id: Optional[int] = Query(None), limit: int = Query(50, ge=1, le=200)):
+    clauses = ["true"]
+    params = {"lim": limit}
+    if user_id is not None:
+        clauses.append("user_id = :uid")
+        params["uid"] = user_id
+    if status:
+        clauses.append("status = :st")
+        params["st"] = status
+    if last_id is not None:
+        clauses.append("id < :lid")
+        params["lid"] = last_id
+    sql = f"select * from chessbuddy.tactics_tasks where {' and '.join(clauses)} order by id desc limit :lim"
+    with get_connection() as conn:
+        rows = fetch_all(conn, sql, **params)
+    return {"items": rows}
