@@ -71,6 +71,40 @@ async def root():
     return {"status": "ok"}
 
 
+@app.post("/analyse/pending")
+def analyse_pending(user_id: Optional[int] = Query(None), limit: int = Query(5, ge=1, le=100)):
+    # Pick games without any engine evaluations yet (treat as not analysed)
+    clauses = ["not exists (select 1 from chessbuddy.engine_evaluations e where e.game_id = g.id)"]
+    params = {"lim": limit}
+    if user_id is not None:
+        clauses.append(
+            "exists (select 1 from chessbuddy.external_accounts ea where ea.user_id = :uid and ((ea.provider = wp.provider and ea.external_username = wp.username) or (ea.provider = bp.provider and ea.external_username = bp.username)))"
+        )
+        params["uid"] = user_id
+    sql = f"""
+        select g.id
+        from chessbuddy.games g
+        join chessbuddy.players wp on wp.id = g.white_player_id
+        join chessbuddy.players bp on bp.id = g.black_player_id
+        where {' and '.join(clauses)}
+        order by coalesce(g.played_at, g.imported_at) desc, g.id desc
+        limit :lim
+    """
+    ids: list[int] = []
+    with get_connection() as conn:
+        rows = fetch_all(conn, sql, **params)
+        ids = [int(r["id"]) for r in rows]
+    processed = 0
+    errors: list[dict] = []
+    for gid in ids:
+        try:
+            analyse_game_pipeline(gid)
+            processed += 1
+        except Exception as e:  # noqa
+            errors.append({"game_id": gid, "error": str(e)})
+    return {"selected": len(ids), "processed": processed, "errors": errors}
+
+
 @app.get("/users/by_external")
 def user_by_external(provider: str, external_user_id: Optional[str] = None, external_username: Optional[str] = None):
     if not external_user_id and not external_username:

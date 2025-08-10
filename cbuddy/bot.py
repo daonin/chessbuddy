@@ -23,9 +23,9 @@ async def api_get(path: str, **params):
         return r.json()
 
 
-async def api_post(path: str, json_body: Optional[dict] = None):
+async def api_post(path: str, json_body: Optional[dict] = None, params: Optional[dict] = None):
     async with httpx.AsyncClient(timeout=180) as client:
-        r = await client.post(f"{API_BASE}{path}", json=json_body)
+        r = await client.post(f"{API_BASE}{path}", json=json_body, params=params)
         r.raise_for_status()
         return r.json()
 
@@ -53,6 +53,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/import_chesscom <username> [months] — импортировать партии с chess.com\n"
         "/status — статус индексации\n"
         "/task [category] [username] — задачка; по умолчанию blunder\n"
+        "/analyse — проанализировать все ожидающие партии (только твои)\n"
         "Ответ на задачу отправляй реплаем в формате UCI (e2e4)."
     )
 
@@ -125,6 +126,25 @@ async def task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Не удалось получить задачу: {e}")
 
 
+async def analyse(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    internal_user_id = await ensure_internal_user(update)
+    total_processed = 0
+    total_selected = 0
+    errors = 0
+    for _ in range(20):
+        try:
+            data = await api_post("/analyse/pending", params={"user_id": internal_user_id, "limit": 10})
+            total_selected += data.get("selected", 0)
+            total_processed += data.get("processed", 0)
+            errors += len(data.get("errors", []))
+            if data.get("selected", 0) == 0 or data.get("processed", 0) == 0:
+                break
+        except Exception as e:  # noqa
+            await update.message.reply_text(f"Ошибка анализа: {e}")
+            break
+    await update.message.reply_text(f"Анализ завершен: обработано {total_processed}, ошибок {errors}.")
+
+
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.reply_to_message:
         return
@@ -158,6 +178,7 @@ def main() -> None:
     app.add_handler(CommandHandler("import_chesscom", import_chesscom))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("task", task))
+    app.add_handler(CommandHandler("analyse", analyse))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), reply_handler))
     app.run_polling()
 
