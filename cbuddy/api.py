@@ -311,6 +311,55 @@ def import_pgn_endpoint(body: ImportPGNRequest):
     return {"game_id": res.game_id, "created": res.created}
 
 
+class UserSettings(BaseModel):
+    brilliant_cp: Optional[int] = None
+    great_cp: Optional[int] = None
+    inaccuracy_cp: Optional[int] = None
+    mistake_cp: Optional[int] = None
+    blunder_cp: Optional[int] = None
+    near_best_tolerance_cp: Optional[int] = None
+
+
+@app.get("/users/{user_id}/settings")
+def get_user_settings(user_id: int):
+    with get_connection() as conn:
+        row = fetch_one(conn, "select * from chessbuddy.user_settings where user_id=:uid", uid=user_id)
+        if not row:
+            # return defaults from AppConfig
+            t = AppConfig().thresholds
+            return {
+                "user_id": user_id,
+                "brilliant_cp": t.brilliant_cp,
+                "great_cp": t.great_cp,
+                "inaccuracy_cp": t.inaccuracy_cp,
+                "mistake_cp": t.mistake_cp,
+                "blunder_cp": t.blunder_cp,
+                "near_best_tolerance_cp": t.near_best_tolerance_cp,
+                "is_default": True,
+            }
+        return {**row, "is_default": False}
+
+
+@app.put("/users/{user_id}/settings")
+def update_user_settings(user_id: int, body: UserSettings):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        return {"updated": False}
+    with get_connection() as conn:
+        # upsert
+        cols = ["user_id"] + list(fields.keys())
+        vals = {"uid": user_id, **{f"v_{k}": v for k, v in fields.items()}}
+        set_cols = ", ".join(fields.keys())
+        placeholders = ", ".join([f":v_{k}" for k in fields.keys()])
+        updates = ", ".join([f"{k} = excluded.{k}" for k in fields.keys()])
+        execute(conn, f"""
+            insert into chessbuddy.user_settings (user_id, {set_cols})
+            values (:uid, {placeholders})
+            on conflict (user_id) do update set {updates}, updated_at = now()
+        """, **vals)
+    return {"updated": True}
+
+
 class EnsureExternalUserRequest(BaseModel):
     provider: str
     external_user_id: Optional[str] = None
