@@ -52,8 +52,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Привет! Я ChessBuddy. Команды:\n"
         "/import_chesscom <username> [months] — импортировать партии с chess.com\n"
         "/status — статус индексации\n"
-        "/task [category] [username] — задачка; по умолчанию blunder\n"
+        "/task [category] — задачка; по умолчанию blunder\n"
         "/analyse — проанализировать все ожидающие партии (только твои)\n"
+        "/reanalyse <game_id>|last [--clear] — переанализ одной игры\n"
+        "/reclassify <game_id>|last — переклассифицировать хайлайты без движка\n"
         "Ответ на задачу отправляй реплаем в формате UCI (e2e4)."
     )
 
@@ -80,9 +82,8 @@ async def import_chesscom(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     internal_user_id = await ensure_internal_user(update)
-    username = USERS.get(update.effective_user.id, {}).get("username")
     try:
-        res = await api_get("/status", username=username, user_id=internal_user_id)
+        res = await api_get("/status", user_id=internal_user_id)
         job = res.get("last_import_job")
         job_line = ""
         if job:
@@ -90,7 +91,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tm = job.get("total_months", 0)
             job_line = f"\nПоследний импорт: {job.get('status')} {pm}/{tm}, игр: +{job.get('imported_games',0)}/~{job.get('total_games',0)}"
         await update.message.reply_text(
-            f"Пользователь: {username or '—'}\n"
+            f"Пользователь id={internal_user_id}\n"
             f"Партии: {res['analysed_games']}/{res['total_games']} ({res['progress_percent'] or 0}%)\n"
             f"Хайлайты: {res['total_highlights']}\n"
             f"Задачи: new={res.get('tasks',{}).get('new',0)}, answered={res.get('tasks',{}).get('answered',0)}" + job_line
@@ -101,22 +102,15 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     internal_user_id = await ensure_internal_user(update)
-    username = USERS.get(update.effective_user.id, {}).get("username")
     category = context.args[0] if context.args else "blunder"
     try:
         body = {"user_id": internal_user_id, "category": category}
-        if username:
-            body["username"] = username
         res = await api_post("/tasks/random", json_body=body)
         task_id = res["task_id"]
-        tasks = await api_get("/tasks", user_id=internal_user_id, limit=1)
-        fen = None
-        for t in tasks.get("items", []):
-            if t["id"] == task_id:
-                fen = t["fen"]
-                break
+        task = await api_get(f"/tasks/{task_id}")
+        fen = task.get("fen")
         if not fen:
-            await update.message.reply_text("Не удалось получить задачу.")
+            await update.message.reply_text("Не удалось получить задачу (нет позиции).")
             return
         img = fen_to_png_bytes(fen)
         caption = f"Задача #{task_id} ({category}). Ответь реплаем ходом в формате UCI (e2e4)."
@@ -133,7 +127,8 @@ async def analyse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     errors = 0
     for _ in range(20):
         try:
-            data = await api_post("/analyse/pending", params={"user_id": internal_user_id, "limit": 10})
+            # Обрабатываем по одной партии за вызов, чтобы избежать 3-минутных таймаутов
+            data = await api_post("/analyse/pending", params={"user_id": internal_user_id, "limit": 1})
             total_selected += data.get("selected", 0)
             total_processed += data.get("processed", 0)
             errors += len(data.get("errors", []))
@@ -143,6 +138,55 @@ async def analyse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Ошибка анализа: {e}")
             break
     await update.message.reply_text(f"Анализ завершен: обработано {total_processed}, ошибок {errors}.")
+
+
+async def _resolve_game_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    internal_user_id = await ensure_internal_user(update)
+    args = list(context.args or [])
+    args_wo_flags = [a for a in args if not a.startswith("--")]
+    if not args_wo_flags:
+        return None
+    first = args_wo_flags[0]
+    if first.isdigit():
+        return int(first)
+    if first.lower() == "last":
+        try:
+            res = await api_get("/games", user_id=internal_user_id, limit=1)
+            items = res.get("items", [])
+            if items:
+                return int(items[0]["id"])
+        except Exception:
+            return None
+    return None
+
+
+async def reanalyse_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await ensure_internal_user(update)
+    game_id = await _resolve_game_id(update, context)
+    if not game_id:
+        await update.message.reply_text("Формат: /reanalyse <game_id>|last [--clear]")
+        return
+    clear = any(a == "--clear" for a in (context.args or []))
+    await update.message.reply_text(f"Запускаю переанализ игры {game_id}{' с очисткой' if clear else ''}…")
+    try:
+        await api_post(f"/games/{game_id}/reanalyse", params={"clear_tasks": str(clear).lower()})
+        await update.message.reply_text("Переанализ завершен.")
+    except Exception as e:  # noqa
+        await update.message.reply_text(f"Ошибка реанализа: {e}")
+
+
+async def reclassify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await ensure_internal_user(update)
+    game_id = await _resolve_game_id(update, context)
+    if not game_id:
+        await update.message.reply_text("Формат: /reclassify <game_id>|last")
+        return
+    await update.message.reply_text(f"Переклассификация хайлайтов для игры {game_id}…")
+    try:
+        await api_post(f"/games/{game_id}/reclassify_highlights")
+        await update.message.reply_text("Готово.")
+    except Exception as e:  # noqa
+        await update.message.reply_text(f"Ошибка переклассификации: {e}")
 
 
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -179,6 +223,8 @@ def main() -> None:
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("task", task))
     app.add_handler(CommandHandler("analyse", analyse))
+    app.add_handler(CommandHandler("reanalyse", reanalyse_cmd))
+    app.add_handler(CommandHandler("reclassify", reclassify_cmd))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), reply_handler))
     app.run_polling()
 

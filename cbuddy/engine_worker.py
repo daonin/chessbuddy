@@ -3,6 +3,7 @@ import os
 import shutil
 import time
 from dataclasses import dataclass
+import logging
 from typing import Optional
 
 import chess
@@ -47,7 +48,10 @@ def _open_engine(cfg: AppConfig) -> chess.engine.SimpleEngine:
 
 def _eval_fen(engine: chess.engine.SimpleEngine, fen: str, movetime_ms: int, multipv: int = 1) -> list[EvalResult]:
     board = chess.Board(fen)
+    t0 = time.perf_counter()
     info = engine.analyse(board, chess.engine.Limit(time=movetime_ms / 1000), multipv=multipv)
+    dt = (time.perf_counter() - t0) * 1000
+    logging.getLogger("cbuddy").debug("engine.analyse fen=%s multipv=%s movetime_ms=%s took=%.1fms", fen, multipv, movetime_ms, dt)
     infos = info if isinstance(info, list) else [info]
     results: list[EvalResult] = []
     for li in infos:
@@ -62,17 +66,23 @@ def _eval_fen(engine: chess.engine.SimpleEngine, fen: str, movetime_ms: int, mul
 def analyse_game_fast(game_id: int) -> None:
     """Fast pass: evaluate positions before/after each move, store engine_evaluations."""
     cfg = AppConfig()
+    logger = logging.getLogger("cbuddy")
     with _open_engine(cfg) as engine, get_connection() as conn:
         moves = fetch_all(conn, """
             select id, ply, fen_before, fen_after from chessbuddy.moves
             where game_id = :gid
             order by ply asc
         """, gid=game_id)
+        logger.info("analyse_fast game_id=%s moves=%s", game_id, len(moves))
         for m in moves:
             for key, fen in (("before", m["fen_before"]), ("after", m["fen_after"])):
                 if not fen:
                     continue
-                res = _eval_fen(engine, fen, cfg.engine.fast_movetime_ms, multipv=1)[0]
+                try:
+                    res = _eval_fen(engine, fen, cfg.engine.fast_movetime_ms, multipv=1)[0]
+                except Exception:
+                    logger.exception("engine eval failed game_id=%s move_id=%s ply=%s phase=%s", game_id, m["id"], m["ply"], key)
+                    raise
                 execute(conn, """
                     insert into chessbuddy.engine_evaluations (
                         game_id, move_id, ply, eval_side, score_cp, score_mate, best_move_uci, depth, engine_name, engine_version
@@ -132,6 +142,7 @@ def annotate_highlights(game_id: int) -> None:
 
 def deep_refine_candidates(game_id: int) -> None:
     cfg = AppConfig()
+    logger = logging.getLogger("cbuddy")
     with _open_engine(cfg) as engine, get_connection() as conn:
         cands = fetch_all(conn, """
             select h.id as highlight_id, m.id as move_id, m.ply, m.fen_before, m.fen_after
@@ -139,11 +150,16 @@ def deep_refine_candidates(game_id: int) -> None:
             join chessbuddy.moves m on m.id = h.move_id
             where h.game_id = :gid
         """, gid=game_id)
+        logger.info("deep_refine game_id=%s candidates=%s", game_id, len(cands))
         for c in cands:
             if not c["fen_before"] or not c["fen_after"]:
                 continue
-            before = _eval_fen(engine, c["fen_before"], cfg.engine.deep_movetime_ms, cfg.engine.deep_multipv)[0]
-            after = _eval_fen(engine, c["fen_after"], cfg.engine.deep_movetime_ms, cfg.engine.deep_multipv)[0]
+            try:
+                before = _eval_fen(engine, c["fen_before"], cfg.engine.deep_movetime_ms, cfg.engine.deep_multipv)[0]
+                after = _eval_fen(engine, c["fen_after"], cfg.engine.deep_movetime_ms, cfg.engine.deep_multipv)[0]
+            except Exception:
+                logger.exception("engine deep refine failed game_id=%s move_id=%s ply=%s", game_id, c["move_id"], c["ply"]) 
+                raise
             delta = after.cp - before.cp
             execute(conn, """
                 update chessbuddy.move_highlights

@@ -9,19 +9,35 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, ConfigDict
+import logging
+import sys
 
 from .db import get_connection, fetch_all, fetch_one, execute
 from .importer import import_pgn, import_chesscom_month
 from .engine_worker import analyse_game_pipeline, verify_task_answer
 from .config import AppConfig
+from .engine_worker import annotate_highlights
+
+
+logger = logging.getLogger("cbuddy")
+if not logger.handlers:
+    _h = logging.StreamHandler(sys.stdout)
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logger.addHandler(_h)
+logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
 
 
 class _LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         start = time.perf_counter()
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            dur_ms = (time.perf_counter() - start) * 1000
+            logger.exception("HTTP %s %s -> exception after %.1fms", request.method, request.url.path, dur_ms)
+            raise
         dur_ms = (time.perf_counter() - start) * 1000
-        print(f"{request.method} {request.url.path} -> {response.status_code} {dur_ms:.1f}ms")
+        logger.info("HTTP %s %s -> %s %.1fms", request.method, request.url.path, response.status_code, dur_ms)
         return response
 
 
@@ -85,6 +101,7 @@ def engine_health():
         eng.quit()
         return {"ok": True, "engine_path": path}
     except Exception as e:  # noqa
+        logger.exception("engine_health failed for path=%s", path)
         return {"ok": False, "engine_path": path, "error": str(e)}
 
 
@@ -117,7 +134,7 @@ def analyse_pending(user_id: Optional[int] = Query(None), limit: int = Query(5, 
             analyse_game_pipeline(gid)
             processed += 1
         except Exception as e:  # noqa
-            print(f"analyse error game_id={gid}: {e}")
+            logger.exception("analyse error game_id=%s", gid)
             errors.append({"game_id": gid, "error": str(e)})
     return {"selected": len(ids), "processed": processed, "errors": errors}
 
@@ -220,7 +237,7 @@ def status(username: Optional[str] = Query(None), user_id: Optional[int] = Query
                 """,
                 uid=user_id,
             )
-        # last import job (prefer username context)
+        # last import job
         job = None
         if username is not None:
             job = fetch_one(conn, """
@@ -229,6 +246,13 @@ def status(username: Optional[str] = Query(None), user_id: Optional[int] = Query
                 order by started_at desc, id desc
                 limit 1
             """, uname=username)
+        elif user_id is not None:
+            job = fetch_one(conn, """
+                select * from chessbuddy.import_jobs
+                where initiated_by_user_id=:uid
+                order by started_at desc, id desc
+                limit 1
+            """, uid=user_id)
     progress = None
     if total_games:
         progress = round((analysed_games / total_games) * 100)
@@ -384,6 +408,7 @@ def list_games(
     start_time: Optional[datetime] = Query(None, description="played_at >= ISO8601"),
     end_time: Optional[datetime] = Query(None, description="played_at < ISO8601"),
     username: Optional[str] = Query(None, description="filter by white or black username"),
+    user_id: Optional[int] = Query(None, description="filter by internal user id via linked external accounts"),
     last_id: Optional[int] = Query(None),
     limit: int = Query(50, ge=1, le=200),
 ):
@@ -398,6 +423,9 @@ def list_games(
     if username:
         clauses.append("(white_username = :uname or black_username = :uname)")
         params["uname"] = username
+    if user_id is not None:
+        clauses.append("exists (select 1 from chessbuddy.external_accounts ea where ea.user_id=:uid and (white_username = ea.external_username or black_username = ea.external_username))")
+        params["uid"] = user_id
     if last_id is not None:
         clauses.append("id < :lid")
         params["lid"] = last_id
@@ -445,6 +473,17 @@ def reanalyse_game(game_id: int, clear_tasks: bool = Query(False)):
             execute(conn, "delete from chessbuddy.tactics_tasks where game_id=:id", id=game_id)
     analyse_game_pipeline(game_id)
     return {"status": "reanalyzed"}
+
+
+@app.post("/games/{game_id}/reclassify_highlights")
+def reclassify_highlights(game_id: int):
+    """Переклассификация существующих хайлайтов по актуальным порогам без повторного прогона движка.
+    Удаляет старые записи move_highlights и пересоздаёт их из engine_evaluations.
+    """
+    with get_connection() as conn:
+        execute(conn, "delete from chessbuddy.move_highlights where game_id=:id", id=game_id)
+    annotate_highlights(game_id)
+    return {"status": "reclassified"}
 
 
 @app.get("/games/{game_id}/highlights")
@@ -620,6 +659,9 @@ def random_task(body: RandomTaskRequest):
     if body.username:
         clauses.append("(white_username = :uname or black_username = :uname)")
         params["uname"] = body.username
+    if body.user_id is not None:
+        clauses.append("exists (select 1 from chessbuddy.external_accounts ea where ea.user_id=:uid and (white_username = ea.external_username or black_username = ea.external_username))")
+        params["uid"] = body.user_id
     if body.start_time is not None:
         clauses.append("played_at >= :st")
         params["st"] = body.start_time
@@ -695,3 +737,12 @@ def list_tasks(user_id: Optional[int] = Query(None), status: Optional[str] = Que
     with get_connection() as conn:
         rows = fetch_all(conn, sql, **params)
     return {"items": rows}
+
+
+@app.get("/tasks/{task_id}")
+def get_task(task_id: int):
+    with get_connection() as conn:
+        row = fetch_one(conn, "select * from chessbuddy.tactics_tasks where id=:id", id=task_id)
+        if not row:
+            raise HTTPException(404, "task not found")
+        return row
