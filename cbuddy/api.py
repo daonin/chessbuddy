@@ -161,6 +161,44 @@ def import_pgn_endpoint(body: ImportPGNRequest):
     return {"game_id": res.game_id, "created": res.created}
 
 
+class EnsureExternalUserRequest(BaseModel):
+    provider: str  # 'telegram' | 'chess.com' | 'lichess'
+    external_user_id: Optional[str] = None
+    external_username: Optional[str] = None
+    display_name: Optional[str] = None
+
+
+@app.post("/users/ensure_external")
+def ensure_external_user(req: EnsureExternalUserRequest):
+    if not req.external_user_id and not req.external_username:
+        raise HTTPException(400, "external_user_id or external_username required")
+    with get_connection() as conn:
+        # Try to find existing mapping
+        where = []
+        params = {"prov": req.provider}
+        if req.external_user_id:
+            where.append("external_user_id = :eid")
+            params["eid"] = req.external_user_id
+        if req.external_username:
+            where.append("external_username = :euname")
+            params["euname"] = req.external_username
+        row = fetch_one(conn, f"select user_id from chessbuddy.external_accounts where provider=:prov and {' and '.join(where)}", **params)
+        if row:
+            return {"user_id": row["user_id"]}
+        # Create user and mapping
+        uname = req.external_username or f"{req.provider}:{req.external_user_id}"
+        user = fetch_one(conn, """
+            insert into chessbuddy.users (username, display_name)
+            values (:uname, :dname)
+            returning id
+        """, uname=uname, dname=req.display_name or uname)
+        execute(conn, """
+            insert into chessbuddy.external_accounts (user_id, provider, external_username, external_user_id)
+            values (:uid, :prov, :euname, :eid)
+        """, uid=user["id"], prov=req.provider, euname=req.external_username, eid=req.external_user_id)
+        return {"user_id": user["id"]}
+
+
 class ImportChesscomJobRequest(BaseModel):
     username: str
     months: int = 3
@@ -401,6 +439,9 @@ class VerifyTaskRequest(BaseModel):
 
 @app.post("/tasks/{task_id}/verify")
 def verify_task(task_id: int, body: VerifyTaskRequest):
+    with get_connection() as conn:
+        # The user_id is now resolved via /users/ensure_external
+        pass
     try:
         res = verify_task_answer(task_id, body.move_uci, user_id=body.user_id, response_ms=body.response_ms)
     except ValueError:
@@ -415,6 +456,8 @@ class CreateTaskFromHighlightRequest(BaseModel):
 @app.post("/highlights/{highlight_id}/create_task")
 def create_task_from_highlight(highlight_id: int, body: CreateTaskFromHighlightRequest):
     with get_connection() as conn:
+        # The user_id is now resolved via /users/ensure_external
+        pass
         row = fetch_one(conn, """
             select h.id, h.game_id, h.ply, m.id as move_id, m.fen_before
             from chessbuddy.move_highlights h
@@ -465,6 +508,8 @@ def random_task(body: RandomTaskRequest):
         params["et"] = body.end_time
     where_sql = " and ".join(clauses)
     with get_connection() as conn:
+        # The user_id is now resolved via /users/ensure_external
+        pass
         bounds = fetch_one(conn, f"""
             select min(highlight_id) as min_id, max(highlight_id) as max_id
             from chessbuddy.v_move_highlights_feed
