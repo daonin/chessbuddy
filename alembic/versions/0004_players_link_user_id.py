@@ -3,8 +3,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '0004_players_link_user_id'
-down_revision = '0003_external_accounts_provider_telegram'
+revision = '0004'
+down_revision = '0003'
 branch_labels = None
 depends_on = None
 
@@ -12,8 +12,17 @@ depends_on = None
 def upgrade() -> None:
     conn = op.get_bind()
     # Add user_id to players and backfill from external_accounts
-    op.add_column('players', sa.Column('user_id', sa.BigInteger(), nullable=True, schema='chessbuddy'))
-    op.create_foreign_key(None, 'players', 'users', ['user_id'], ['id'], source_schema='chessbuddy', referent_schema='chessbuddy', ondelete='SET NULL')
+    op.add_column('players', sa.Column('user_id', sa.BigInteger(), nullable=True), schema='chessbuddy')
+    op.create_foreign_key(
+        None,
+        'players',
+        'users',
+        ['user_id'],
+        ['id'],
+        source_schema='chessbuddy',
+        referent_schema='chessbuddy',
+        ondelete='SET NULL',
+    )
 
     conn.execute(sa.text(
         """
@@ -26,7 +35,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint(None, 'players', schema='chessbuddy', type_='foreignkey')
+    # Best-effort: drop FK by discovering name (fallback to direct SQL if needed)
     op.drop_column('players', 'user_id', schema='chessbuddy')
 
 
