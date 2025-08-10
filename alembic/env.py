@@ -1,7 +1,7 @@
 import os
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool, text
+from sqlalchemy import engine_from_config, pool
 from alembic import context
 from dotenv import load_dotenv
 
@@ -22,7 +22,7 @@ database_url = os.getenv("DATABASE_URL")
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
 
-# target_metadata is not used (no autogenerate models in this repo)
+# No metadata autogeneration used here
 target_metadata = None
 
 
@@ -49,15 +49,6 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
         future=True,
     )
-
-    # Try to ensure schema exists; ignore permission errors (Docker initdb should create it)
-    try:
-        with connectable.connect() as pre_conn:
-            pre_conn.execute(text("create schema if not exists chessbuddy"))
-            pre_conn.commit()
-    except Exception:
-        # likely insufficient privilege; continue assuming schema exists
-        pass
 
     with connectable.connect() as connection:
         context.configure(
