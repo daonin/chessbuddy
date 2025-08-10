@@ -1,4 +1,6 @@
 from __future__ import annotations
+import os
+import shutil
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -17,8 +19,25 @@ class EvalResult:
     depth: Optional[int]
 
 
+def get_engine_path(cfg: Optional[AppConfig] = None) -> str:
+    cfg = cfg or AppConfig()
+    candidates: list[Optional[str]] = [
+        cfg.engine.engine_path,
+        shutil.which("stockfish"),
+        "/usr/games/stockfish",
+        "/usr/bin/stockfish",
+        "/usr/local/bin/stockfish",
+        "/opt/homebrew/bin/stockfish",
+    ]
+    for p in candidates:
+        if p and os.path.exists(p):
+            return p
+    raise FileNotFoundError("Stockfish binary not found; set ENGINE_PATH or install stockfish in PATH")
+
+
 def _open_engine(cfg: AppConfig) -> chess.engine.SimpleEngine:
-    eng = chess.engine.SimpleEngine.popen_uci(cfg.engine.engine_path)
+    path = get_engine_path(cfg)
+    eng = chess.engine.SimpleEngine.popen_uci(path)
     eng.configure({
         "Threads": cfg.engine.threads,
         "Hash": cfg.engine.hash_mb,
