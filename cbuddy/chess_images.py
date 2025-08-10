@@ -16,7 +16,9 @@ def fen_to_png_bytes(fen: str, *, last_move_uci: Optional[str] = None, check: bo
             uci = last_move_uci
             arrows = [chess.svg.Arrow(chess.parse_square(uci[:2]), chess.parse_square(uci[2:4]), color="#00aa00")]  # green arrow
             # Also set lastmove to suppress default red dot markers on unrelated squares
-            lastmove = (chess.parse_square(uci[:2]), chess.parse_square(uci[2:4]))
+            _from = chess.parse_square(uci[:2])
+            _to = chess.parse_square(uci[2:4])
+            lastmove = chess.Move(_from, _to)
         except Exception:
             arrows = []
             lastmove = None
