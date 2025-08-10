@@ -1,0 +1,73 @@
+import os
+from logging.config import fileConfig
+
+from sqlalchemy import engine_from_config, pool, text
+from alembic import context
+from dotenv import load_dotenv
+
+# this is the Alembic Config object, which provides
+# access to the values within the .ini file in use.
+config = context.config
+
+# Interpret the config file for Python logging.
+# This line sets up loggers basically.
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# Load .env for DATABASE_URL if present
+load_dotenv()
+
+# Get URL from env
+database_url = os.getenv("DATABASE_URL")
+if database_url:
+    config.set_main_option("sqlalchemy.url", database_url)
+
+# target_metadata is not used (no autogenerate models in this repo)
+target_metadata = None
+
+
+def run_migrations_offline() -> None:
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+        include_schemas=True,
+        version_table_schema="chessbuddy",
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online() -> None:
+    # Create engine
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+        future=True,
+    )
+
+    # Ensure schema exists BEFORE Alembic ensures version table
+    with connectable.connect() as pre_conn:
+        pre_conn.execute(text("create schema if not exists chessbuddy"))
+        pre_conn.commit()
+
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            include_schemas=True,
+            version_table_schema="chessbuddy",
+        )
+
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
