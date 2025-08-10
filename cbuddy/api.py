@@ -5,7 +5,7 @@ import random
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, ConfigDict
@@ -106,7 +106,12 @@ def engine_health():
 
 
 @app.post("/analyse/pending")
-def analyse_pending(user_id: Optional[int] = Query(None), limit: int = Query(5, ge=1, le=100)):
+def analyse_pending(
+    user_id: Optional[int] = Query(None),
+    limit: int = Query(5, ge=1, le=100),
+    background: bool = Query(True),
+    background_tasks: BackgroundTasks = None,
+):
     clauses = ["not exists (select 1 from chessbuddy.engine_evaluations e where e.game_id = g.id)"]
     params = {"lim": limit}
     if user_id is not None:
@@ -127,16 +132,26 @@ def analyse_pending(user_id: Optional[int] = Query(None), limit: int = Query(5, 
     with get_connection() as conn:
         rows = fetch_all(conn, sql, **params)
         ids = [int(r["id"]) for r in rows]
-    processed = 0
-    errors: list[dict] = []
-    for gid in ids:
-        try:
-            analyse_game_pipeline(gid)
-            processed += 1
-        except Exception as e:  # noqa
-            logger.exception("analyse error game_id=%s", gid)
-            errors.append({"game_id": gid, "error": str(e)})
-    return {"selected": len(ids), "processed": processed, "errors": errors}
+    if background:
+        scheduled = 0
+        for gid in ids:
+            try:
+                background_tasks.add_task(analyse_game_pipeline, gid)
+                scheduled += 1
+            except Exception as e:  # noqa
+                logger.exception("schedule analyse failed game_id=%s", gid)
+        return {"selected": len(ids), "scheduled": scheduled, "processed": 0, "errors": []}
+    else:
+        processed = 0
+        errors: list[dict] = []
+        for gid in ids:
+            try:
+                analyse_game_pipeline(gid)
+                processed += 1
+            except Exception as e:  # noqa
+                logger.exception("analyse error game_id=%s", gid)
+                errors.append({"game_id": gid, "error": str(e)})
+        return {"selected": len(ids), "processed": processed, "errors": errors}
 
 
 @app.get("/users/by_external")
@@ -460,7 +475,12 @@ def delete_game(game_id: int):
 
 
 @app.post("/games/{game_id}/reanalyse")
-def reanalyse_game(game_id: int, clear_tasks: bool = Query(False)):
+def reanalyse_game(
+    game_id: int,
+    clear_tasks: bool = Query(False),
+    background: bool = Query(True),
+    background_tasks: BackgroundTasks = None,
+):
     with get_connection() as conn:
         # Clear evaluations and highlights for clean reanalysis
         execute(conn, "delete from chessbuddy.engine_evaluations where game_id=:id", id=game_id)
@@ -473,6 +493,9 @@ def reanalyse_game(game_id: int, clear_tasks: bool = Query(False)):
                 )
             """, id=game_id)
             execute(conn, "delete from chessbuddy.tactics_tasks where game_id=:id", id=game_id)
+    if background:
+        background_tasks.add_task(analyse_game_pipeline, game_id)
+        return {"status": "scheduled"}
     analyse_game_pipeline(game_id)
     return {"status": "reanalyzed"}
 
@@ -584,7 +607,10 @@ def random_highlight(category: Optional[str] = Query(None, pattern=r"^[a-z_]+$")
 
 
 @app.post("/analyse/{game_id}")
-def analyse(game_id: int):
+def analyse(game_id: int, background: bool = Query(True), background_tasks: BackgroundTasks = None):
+    if background:
+        background_tasks.add_task(analyse_game_pipeline, game_id)
+        return {"status": "scheduled"}
     analyse_game_pipeline(game_id)
     return {"status": "ok"}
 

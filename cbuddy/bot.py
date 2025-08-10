@@ -141,7 +141,7 @@ async def analyse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for _ in range(20):
         try:
             # Обрабатываем по одной партии за вызов, чтобы избежать 3-минутных таймаутов
-            data = await api_post("/analyse/pending", params={"user_id": internal_user_id, "limit": 1})
+            data = await api_post("/analyse/pending", params={"user_id": internal_user_id, "limit": 1, "background": "true"})
             total_selected += data.get("selected", 0)
             total_processed += data.get("processed", 0)
             errors += len(data.get("errors", []))
